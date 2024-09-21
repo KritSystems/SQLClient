@@ -8,16 +8,20 @@
 
 #import <Foundation/Foundation.h>
 
-extern NSString* _Nonnull const SQLClientMessageNotification;
-extern NSString* _Nonnull const SQLClientErrorNotification;
-extern NSString* _Nonnull const SQLClientMessageKey;
-extern NSString* _Nonnull const SQLClientCodeKey;
-extern NSString* _Nonnull const SQLClientSeverityKey;
+@protocol SQLClientDelegate <NSObject>
+
+- (void)message:(nonnull NSString*)message;
+- (void)error:(nonnull NSString*)error code:(int)code severity:(int)severity;
+
+@end
 
 /**
  *  Native SQL Server client for iOS. An Objective-C wrapper around the open-source FreeTDS library.
  */
 @interface SQLClient : NSObject
+
+
+@property (nonatomic, weak) id <SQLClientDelegate> _Nullable delegate;
 
 /**
  *  Connection timeout, in seconds. Default is 5. Set before calling connect.
@@ -38,13 +42,6 @@ extern NSString* _Nonnull const SQLClientSeverityKey;
  *  To override this setting, update this property.
  */
 @property (atomic, assign) int maxTextSize;
-
-/**
- *  Returns an initialized SQLClient instance as a singleton.
- *
- *  @return Shared SQLClient object
- */
-+ (nullable instancetype)sharedInstance;
 
 /**
  *  Connects to a SQL database server.
@@ -77,7 +74,7 @@ extern NSString* _Nonnull const SQLClientSeverityKey;
  *  @param sql Required. A SQL statement
  *  @param completion Block to be executed upon method completion. Accepts an NSArray of tables. Each table is an NSArray of rows.
  *  Each row is an NSDictionary of columns where key = name and object = value as one of the following types:
- *  NSString, NSNumber, NSDecimalNumber, NSData, UIImage, NSDate, NSUUID
+ *  NSString, NSNumber, NSDecimalNumber, NSData, NSDate, NSUUID
  */
 - (void)execute:(nonnull NSString*)sql completion:(nullable void(^)(NSArray* _Nullable results))completion;
 

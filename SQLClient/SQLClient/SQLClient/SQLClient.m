@@ -21,11 +21,6 @@ NSString* const SQLClientPendingConnectionError = @"Attempting to connect while 
 NSString* const SQLClientNoConnectionError = @"Attempting to execute while not connected.";
 NSString* const SQLClientPendingExecutionError = @"Attempting to execute while a command is in progress.";
 NSString* const SQLClientRowIgnoreMessage = @"Ignoring unknown row type";
-NSString* const SQLClientMessageNotification = @"SQLClientMessageNotification";
-NSString* const SQLClientErrorNotification = @"SQLClientErrorNotification";
-NSString* const SQLClientMessageKey = @"SQLClientMessageKey";
-NSString* const SQLClientCodeKey = @"SQLClientCodeKey";
-NSString* const SQLClientSeverityKey = @"SQLClientSeverityKey";
 
 struct GUID {
 	unsigned long  data1;
@@ -51,6 +46,8 @@ struct COLUMN
 
 @end
 
+static NSMutableDictionary<NSValue*, SQLClient*>* _connections;
+
 @implementation SQLClient
 {
 	char* _password;
@@ -61,6 +58,62 @@ struct COLUMN
 	RETCODE _returnCode;
 }
 
+#pragma mark - Client connection tracking
+
++ (void)load
+{
+  _connections = [[NSMutableDictionary<NSValue*, SQLClient*> alloc] init];
+}
+
++ (SQLClient*)clientForConnection:(DBPROCESS*)connection
+{
+  NSValue* key = [self keyForConnection:connection];
+  return [_connections objectForKey:key];
+}
+
++ (void)removeClientConnection:(DBPROCESS*)connection
+{
+  if (connection != NULL) {
+    NSValue* key = [self keyForConnection:connection];
+    [_connections removeObjectForKey:key];
+  }
+}
+
++ (void)setClient:(SQLClient*)client forConnection:(DBPROCESS*)connection
+{
+  NSValue* key = [self keyForConnection:connection];
+  [_connections setObject:client forKey:key];
+}
+
++ (NSValue*)keyForConnection:(DBPROCESS*)connection
+{
+  return [NSValue value:connection withObjCType:@encode(DBPROCESS*)];
+}
+
+#pragma mark - FreeTDS Callbacks
+
+//Forwards global message callback to the appropriate SQLClient instance
+int msg_handler(DBPROCESS* dbproc, DBINT msgno, int msgstate, int severity, char* msgtext, char* srvname, char* procname, int line)
+{
+  SQLClient* client = [SQLClient clientForConnection:dbproc];
+  NSString* message = [NSString stringWithUTF8String:msgtext];
+  [client.callbackQueue addOperationWithBlock:^{
+    [client.delegate message:message];
+  }];
+  return INT_EXIT;
+}
+
+//Forwards global error callback to the appropriate SQLClient instance
+int err_handler(DBPROCESS* dbproc, int severity, int dberr, int oserr, char* dberrstr, char* oserrstr)
+{
+  SQLClient* client = [SQLClient clientForConnection:dbproc];
+  NSString* error = [NSString stringWithUTF8String:dberrstr];
+  [client.callbackQueue addOperationWithBlock:^{
+    [client.delegate error:error code:dberr severity:severity];
+  }];
+  return INT_CANCEL;
+}
+
 #pragma mark - NSObject
 
 //Initializes the FreeTDS library and sets callback handlers
@@ -68,24 +121,24 @@ struct COLUMN
 {
     if (self = [super init])
     {
-		//Initialize the FreeTDS library
-		if (dbinit() == FAIL) {
-			return nil;
-		}
-		
-		//Initialize SQLClient
-		self.timeout = SQLClientDefaultTimeout;
-		self.charset = SQLClientDefaultCharset;
-		self.callbackQueue = [NSOperationQueue currentQueue];
-		self.workerQueue = [[NSOperationQueue alloc] init];
-		self.workerQueue.name = SQLClientWorkerQueueName;
-		self.workerQueue.maxConcurrentOperationCount = 1;
-		self.maxTextSize = SQLClientDefaultMaxTextSize;
-		self.executing = NO;
-		
-        //Set FreeTDS callback handlers
-        dberrhandle(err_handler);
-        dbmsghandle(msg_handler);
+      //Initialize the FreeTDS library
+      if (dbinit() == FAIL) {
+        return nil;
+      }
+      
+      //Initialize SQLClient
+      self.timeout = SQLClientDefaultTimeout;
+      self.charset = SQLClientDefaultCharset;
+      self.callbackQueue = [NSOperationQueue currentQueue];
+      self.workerQueue = [[NSOperationQueue alloc] init];
+      self.workerQueue.name = SQLClientWorkerQueueName;
+      self.workerQueue.maxConcurrentOperationCount = 1;
+      self.maxTextSize = SQLClientDefaultMaxTextSize;
+      self.executing = NO;
+      
+      //Set global callback handlers
+      dberrhandle(err_handler);
+      dbmsghandle(msg_handler);
     }
     return self;
 }
@@ -93,20 +146,11 @@ struct COLUMN
 //Exits the FreeTDS library
 - (void)dealloc
 {
-    dbexit();
+  [[self class] removeClientConnection:_connection];
+  dbexit();
 }
 
 #pragma mark - Public
-
-+ (nullable instancetype)sharedInstance
-{
-    static SQLClient* sharedInstance = nil;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        sharedInstance = [[self alloc] init];
-    });
-    return sharedInstance;
-}
 
 - (void)connect:(nonnull NSString*)host
 	   username:(nonnull NSString*)username
@@ -152,7 +196,9 @@ struct COLUMN
 		
 		//Connect to database server
 		_connection = dbopen(_login, [host UTF8String]);
-		if (!_connection) {
+    [[self class] setClient:self forConnection:_connection];
+
+    if (!_connection) {
 			[self connectionFailure:completion];
 			return;
 		}
@@ -585,48 +631,9 @@ struct COLUMN
 		[self cleanupAfterConnection];
 		if (_connection) {
 			dbclose(_connection);
+      [[self class] removeClientConnection:_connection];
 			_connection = NULL;
 		}
-	}];
-}
-
-#pragma mark - FreeTDS Callbacks
-
-//Handles message callback from FreeTDS library.
-int msg_handler(DBPROCESS* dbproc, DBINT msgno, int msgstate, int severity, char* msgtext, char* srvname, char* procname, int line)
-{
-	//Can't call self from a C function, so need to access singleton
-	SQLClient* self = [SQLClient sharedInstance];
-	[self message:[NSString stringWithUTF8String:msgtext]];
-	return INT_EXIT;
-}
-
-//Handles error callback from FreeTDS library.
-int err_handler(DBPROCESS* dbproc, int severity, int dberr, int oserr, char* dberrstr, char* oserrstr)
-{
-	//Can't call self from a C function, so need to access singleton
-	SQLClient* self = [SQLClient sharedInstance];
-	[self error:[NSString stringWithUTF8String:dberrstr] code:dberr severity:severity];
-	return INT_CANCEL;
-}
-
-//Posts a SQLClientMessageNotification notification
-- (void)message:(NSString*)message
-{
-	[[NSOperationQueue mainQueue] addOperationWithBlock:^{
-		[[NSNotificationCenter defaultCenter] postNotificationName:SQLClientMessageNotification object:nil userInfo:@{ SQLClientMessageKey:message }];
-	}];
-}
-
-//Posts a SQLClientErrorNotification notification
-- (void)error:(NSString*)error code:(int)code severity:(int)severity
-{
-	[[NSOperationQueue mainQueue] addOperationWithBlock:^{
-		[[NSNotificationCenter defaultCenter] postNotificationName:SQLClientErrorNotification object:nil userInfo:@{
-			SQLClientMessageKey:error,
-			SQLClientCodeKey:@(code),
-			SQLClientSeverityKey:@(severity)
-		}];
 	}];
 }
 
@@ -667,6 +674,22 @@ int err_handler(DBPROCESS* dbproc, int severity, int dberr, int oserr, char* dbe
 
 #pragma mark - Private
 
+//Invokes delegate on callback queue
+- (void)message:(nonnull NSString*)message
+{
+  [self.callbackQueue addOperationWithBlock:^{
+    [self.delegate message:message];
+  }];
+}
+
+//Invokes delegate on callback queue
+- (void)error:(nonnull NSString*)error code:(int)code severity:(int)severity
+{
+  [self.callbackQueue addOperationWithBlock:^{
+    [self.delegate error:error code:code severity:severity];
+  }];
+}
+
 //Invokes connection completion handler on callback queue with success = NO
 - (void)connectionFailure:(void (^)(BOOL success))completion
 {
@@ -681,7 +704,7 @@ int err_handler(DBPROCESS* dbproc, int severity, int dberr, int oserr, char* dbe
 //Invokes connection completion handler on callback queue with success = [self connected]
 - (void)connectionSuccess:(void (^)(BOOL success))completion
 {
-	[self cleanupAfterConnection];
+  [self cleanupAfterConnection];
 	[self.callbackQueue addOperationWithBlock:^{
 		if (completion) {
 			completion([self isConnected]);

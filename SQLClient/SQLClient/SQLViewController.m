@@ -18,22 +18,6 @@
 
 @implementation SQLViewController
 
-#pragma mark - NSObject
-
-- (instancetype)init
-{
-	if (self = [super init]) {
-		[[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(error:) name:SQLClientErrorNotification object:nil];
-		[[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(message:) name:SQLClientMessageNotification object:nil];
-	}
-	return self;
-}
-
-- (void)dealloc
-{
-	[[NSNotificationCenter defaultCenter] removeObserver:self];
-}
-
 #pragma mark - UIViewController
 
 - (void)loadView
@@ -61,7 +45,7 @@
 
 - (void)viewDidLoad
 {
-    [super viewDidLoad];
+  [super viewDidLoad];
 	[self connect];
 }
 
@@ -69,7 +53,8 @@
 
 - (void)connect
 {
-	SQLClient* client = [SQLClient sharedInstance];
+	SQLClient* client = [[SQLClient alloc] init];
+  client.delegate = self;
 	[self.spinner startAnimating];
 	[client connect:@"server\\instance:port" username:@"user" password:@"pass" database:@"db" completion:^(BOOL success) {
 		[self.spinner stopAnimating];
@@ -81,7 +66,7 @@
 
 - (void)execute
 {
-	SQLClient* client = [SQLClient sharedInstance];	
+	SQLClient* client = [[SQLClient alloc] init];
 	[self.spinner startAnimating];
 	[client execute:@"SELECT * FROM Table" completion:^(NSArray* results) {
 		[self.spinner stopAnimating];
@@ -103,24 +88,17 @@
 	self.textView.text = output;
 }
 
-#pragma mark - SQLClientErrorNotification
+#pragma mark - SQLClientDelegate
 
-- (void)error:(NSNotification*)notification
+- (void)message:(nonnull NSString*)message
 {
-	NSNumber* code = notification.userInfo[SQLClientCodeKey];
-	NSString* message = notification.userInfo[SQLClientMessageKey];
-	NSNumber* severity = notification.userInfo[SQLClientSeverityKey];
-	
-	NSLog(@"Error #%@: %@ (Severity %@)", code, message, severity);
-	[[[UIAlertView alloc] initWithTitle:@"Error" message:message delegate:nil cancelButtonTitle:@"OK" otherButtonTitles:nil, nil] show];
+  NSLog(@"Message: %@", message);
 }
 
-#pragma mark - SQLClientMessageNotification
-
-- (void)message:(NSNotification*)notification
+- (void)error:(nonnull NSString*)error code:(int)code severity:(int)severity
 {
-	NSString* message = notification.userInfo[SQLClientMessageKey];
-	NSLog(@"Message: %@", message);
+  NSLog(@"Error #%@: %d (Severity %d)", code, error, severity);
+  [[[UIAlertView alloc] initWithTitle:@"Error" message:error delegate:nil cancelButtonTitle:@"OK" otherButtonTitles:nil, nil] show];
 }
 
 @end
