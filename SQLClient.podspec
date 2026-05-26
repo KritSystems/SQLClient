@@ -11,5 +11,4 @@ Pod::Spec.new do |s|
   s.libraries = 'iconv'
   s.requires_arc = true
   s.ios.deployment_target = '15.0'
-  s.static_framework = true
 end
